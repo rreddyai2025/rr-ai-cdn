@@ -1,0 +1,102 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Step 1 – Basic static website on S3 for tranquildrift.com.
+  Creates an S3 bucket with website hosting, uploads a "Hello World" index file,
+  and creates a Route 53 record linking tranquildrift.com to the S3 website endpoint.
+
+Parameters:
+  HostedZoneId:
+    Description: Route53 Hosted Zone ID for tranquildrift.com (existing zone)
+    Type: String
+    Default: Z0074044QVSBGLVE4I4R
+  DomainName:
+    Description: Domain name for the static site (must match your hosted zone)
+    Type: String
+    Default: tranquildrift.com
+
+Resources:
+  WebsiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref DomainName
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+    DeletionPolicy: Delete
+
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebsiteBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action: s3:GetObject
+            Resource: !Sub 'arn:aws:s3:::${WebsiteBucket}/*'
+
+  SiteInitFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  SiteInitFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: nodejs16.x
+      Handler: index.handler
+      Role: !GetAtt SiteInitFunctionRole.Arn
+      Timeout: 30
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk');
+          const s3 = new AWS.S3();
+          exports.handler = async (event, context) => {
+            try {
+              await s3.putObject({
+                Bucket: event.ResourceProperties.BucketName,
+                Key: 'index.html',
+                Body: event.ResourceProperties.Content,
+                ContentType: 'text/html'
+              }).promise();
+              return { Status: 'SUCCESS' };
+            } catch (err) {
+              return { Status: 'FAILED', Error: err.message };
+            }
+          };
+
+  InitSiteContent:
+    Type: Custom::SiteContent
+    Properties:
+      ServiceToken: !GetAtt SiteInitFunction.Arn
+      BucketName: !Ref WebsiteBucket
+      Content: '<html><head><title>Hello</title></head><body><h1>Hello World</h1></body></html>'
+    DependsOn:
+      - WebsiteBucket
+      - SiteInitFunction
+
+  DNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: A
+      AliasTarget:
+        DNSName: !Sub '${WebsiteBucket}.s3-website-${AWS::Region}.amazonaws.com'
+        HostedZoneId: 'Z3AQBSTGFYJSTF'  # S3 website endpoint hosted zone ID for us-east-1
+Outputs:
+  WebsiteURL:
+    Description: URL of the static website
+    Value: !Sub 'http://${DomainName}/'
+  S3BucketName:
+    Description: Name of the S3 bucket hosting the website
+    Value: !Ref WebsiteBucket
